@@ -20,9 +20,29 @@ import {
   Hash,
   FolderOpen,
   Save,
-  RotateCcw
+  RotateCcw,
+  Loader2,
+  UploadCloud
 } from 'lucide-react';
-import { MOCK_NEWS, SERVICE_CATEGORIES } from '../constants';
+
+// Import Firebase (sử dụng CDN ESM cho môi trường browser)
+import { 
+  collection, 
+  getDocs, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  query, 
+  orderBy, 
+  onSnapshot 
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { 
+  ref, 
+  uploadBytes, 
+  getDownloadURL 
+} from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
+import { db, storage } from '../firebase';
 
 interface Category {
   id: string;
@@ -31,35 +51,41 @@ interface Category {
   description?: string;
 }
 
+interface Post {
+  id: string;
+  title: string;
+  category: string;
+  excerpt: string;
+  content: string;
+  image: string;
+  date: string;
+  createdAt: any;
+}
+
 const AdminCMS = () => {
   const navigate = useNavigate();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [posts, setPosts] = useState([...MOCK_NEWS]);
-  // Khởi tạo danh mục với dữ liệu mẫu đầy đủ hơn
-  const [categories, setCategories] = useState<Category[]>([
-    ...SERVICE_CATEGORIES.map(c => ({ 
-      id: c.id, 
-      title: c.title,
-      image: 'https://picsum.photos/seed/' + c.id + '/400/300',
-      description: 'Các thông tin về ' + c.title.toLowerCase() + ' của ngành Y tế Hà Nội.'
-    }))
-  ]);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [activeTab, setActiveTab] = useState<'list' | 'add' | 'categories'>('list');
   const [isSuccess, setIsSuccess] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
 
-  // Form State cho bài viết
-  const [newPost, setNewPost] = useState({
+  // Form State bài viết
+  const [editingPost, setEditingPost] = useState<Post | null>(null);
+  const [postForm, setPostForm] = useState({
     title: '',
-    category: 'Tin tức – Sự kiện y tế',
+    category: '',
     excerpt: '',
     content: '',
-    image: 'https://picsum.photos/seed/newpost/800/600',
-    date: new Date().toLocaleDateString('vi-VN')
+    image: '',
   });
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
 
-  // Form State cho danh mục
+  // Form State danh mục
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [categoryForm, setCategoryForm] = useState<Omit<Category, 'id'>>({
     title: '',
@@ -76,88 +102,147 @@ const AdminCMS = () => {
     }
   }, [navigate]);
 
-  const handleDeletePost = (id: number) => {
-    if (window.confirm('Bạn có chắc chắn muốn xóa bài viết này?')) {
-      setPosts(posts.filter(p => p.id !== id));
-    }
-  };
+  // Lấy dữ liệu Realtime từ Firebase
+  useEffect(() => {
+    if (!isLoggedIn) return;
 
-  const handleDeleteCategory = (id: string) => {
-    if (window.confirm('Xóa danh mục này có thể ảnh hưởng đến các bài viết hiện có. Bạn vẫn muốn tiếp tục?')) {
-      setCategories(categories.filter(c => c.id !== id));
-    }
-  };
-
-  const handleEditCategory = (cat: Category) => {
-    setEditingCategory(cat);
-    setCategoryForm({
-      title: cat.title,
-      image: cat.image || '',
-      description: cat.description || ''
+    // Lấy bài viết
+    const qPosts = query(collection(db, "posts"), orderBy("createdAt", "desc"));
+    const unsubscribePosts = onSnapshot(qPosts, (querySnapshot) => {
+      const postsData: Post[] = [];
+      querySnapshot.forEach((doc) => {
+        postsData.push({ id: doc.id, ...doc.data() } as Post);
+      });
+      setPosts(postsData);
     });
+
+    // Lấy danh mục
+    const unsubscribeCategories = onSnapshot(collection(db, "categories"), (querySnapshot) => {
+      const categoriesData: Category[] = [];
+      querySnapshot.forEach((doc) => {
+        categoriesData.push({ id: doc.id, ...doc.data() } as Category);
+      });
+      setCategories(categoriesData);
+      if (categoriesData.length > 0 && !postForm.category) {
+        setPostForm(prev => ({ ...prev, category: categoriesData[0].title }));
+      }
+    });
+
+    return () => {
+      unsubscribePosts();
+      unsubscribeCategories();
+    };
+  }, [isLoggedIn]);
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setImageFile(file);
+      setImagePreview(URL.createObjectURL(file));
+    }
   };
 
-  const resetCategoryForm = () => {
-    setEditingCategory(null);
-    setCategoryForm({ title: '', image: '', description: '' });
+  const uploadImage = async (file: File) => {
+    const storageRef = ref(storage, `news/${Date.now()}_${file.name}`);
+    const snapshot = await uploadBytes(storageRef, file);
+    return await getDownloadURL(snapshot.ref);
   };
 
-  const handleSaveCategory = (e: React.FormEvent) => {
+  const handleSubmitPost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!categoryForm.title.trim()) return;
-
-    if (editingCategory) {
-      // Cập nhật danh mục hiện có
-      setCategories(categories.map(c => 
-        c.id === editingCategory.id ? { ...c, ...categoryForm } : c
-      ));
-    } else {
-      // Thêm danh mục mới
-      const id = categoryForm.title.toLowerCase()
-        .replace(/à|á|ạ|ả|ã|â|ầ|ấ|ậ|ẩ|ẫ|ă|ằ|ắ|ặ|ẳ|ẵ/g, "a")
-        .replace(/è|é|ẹ|ẻ|ẽ|ê|ề|ế|ệ|ể|ễ/g, "e")
-        .replace(/ì|í|ị|ỉ|ĩ/g, "i")
-        .replace(/ò|ó|ọ|ỏ|õ|ô|ồ|ố|ộ|ổ|ỗ|ơ|ờ|ớ|ợ|ở|ỡ/g, "o")
-        .replace(/ù|ú|ụ|ủ|ũ|ư|ừ|ứ|ự|ử|ữ/g, "u")
-        .replace(/ỳ|ý|ỵ|ỷ|ỹ/g, "y")
-        .replace(/đ/g, "d")
-        .replace(/\s+/g, '-')
-        .replace(/[^\w-]/g, '');
-        
-      if (categories.find(c => c.id === id)) {
-        alert('Danh mục này đã tồn tại hoặc trùng mã định danh!');
-        return;
+    setIsLoading(true);
+    try {
+      let imageUrl = postForm.image;
+      
+      // Nếu có file mới thì up lên storage
+      if (imageFile) {
+        imageUrl = await uploadImage(imageFile);
       }
 
-      setCategories([...categories, { id, ...categoryForm }]);
-    }
+      const dataToSave = {
+        ...postForm,
+        image: imageUrl,
+        date: new Date().toLocaleDateString('vi-VN'),
+        createdAt: new Date(),
+      };
 
-    resetCategoryForm();
-    setIsSuccess(true);
-    setTimeout(() => setIsSuccess(false), 2000);
+      if (editingPost) {
+        await updateDoc(doc(db, "posts", editingPost.id), dataToSave);
+      } else {
+        await addDoc(collection(db, "posts"), dataToSave);
+      }
+
+      setIsSuccess(true);
+      setTimeout(() => {
+        setIsSuccess(false);
+        setActiveTab('list');
+        resetPostForm();
+      }, 1500);
+    } catch (err) {
+      console.error("Error saving post:", err);
+      alert("Đã có lỗi xảy ra khi lưu bài viết.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleSubmitPost = (e: React.FormEvent) => {
+  const resetPostForm = () => {
+    setEditingPost(null);
+    setPostForm({
+      title: '',
+      category: categories[0]?.title || '',
+      excerpt: '',
+      content: '',
+      image: '',
+    });
+    setImageFile(null);
+    setImagePreview(null);
+  };
+
+  const handleEditPost = (post: Post) => {
+    setEditingPost(post);
+    setPostForm({
+      title: post.title,
+      category: post.category,
+      excerpt: post.excerpt,
+      content: post.content,
+      image: post.image,
+    });
+    setImagePreview(post.image);
+    setActiveTab('add');
+  };
+
+  const handleDeletePost = async (id: string) => {
+    if (window.confirm('Bạn có chắc chắn muốn xóa bài viết này?')) {
+      await deleteDoc(doc(db, "posts", id));
+    }
+  };
+
+  // Logic cho Danh Mục (Categories) tương tự
+  const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
-    const postToAdd = {
-      ...newPost,
-      id: posts.length + 1,
-      isFeatured: false
-    };
-    setPosts([postToAdd, ...posts]);
-    setIsSuccess(true);
-    setTimeout(() => {
-      setIsSuccess(false);
-      setActiveTab('list');
-      setNewPost({
-        title: '',
-        category: categories[0]?.title || 'Tin tức – Sự kiện y tế',
-        excerpt: '',
-        content: '',
-        image: 'https://picsum.photos/seed/newpost/800/600',
-        date: new Date().toLocaleDateString('vi-VN')
-      });
-    }, 2000);
+    setIsLoading(true);
+    try {
+      if (editingCategory) {
+        await updateDoc(doc(db, "categories", editingCategory.id), categoryForm);
+      } else {
+        await addDoc(collection(db, "categories"), categoryForm);
+      }
+      setIsSuccess(true);
+      setEditingCategory(null);
+      setCategoryForm({ title: '', image: '', description: '' });
+      setTimeout(() => setIsSuccess(false), 1500);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDeleteCategory = async (id: string) => {
+    if (window.confirm('Xóa danh mục có thể ảnh hưởng đến bài viết. Tiếp tục?')) {
+      await deleteDoc(doc(db, "categories", id));
+    }
   };
 
   const filteredPosts = posts.filter(post => {
@@ -170,18 +255,18 @@ const AdminCMS = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex font-sans">
-      {/* CMS Sidebar */}
+      {/* Sidebar CMS */}
       <div className="w-64 bg-slate-900 text-slate-300 flex flex-col hidden lg:flex">
         <div className="p-6 border-b border-slate-800">
           <h2 className="text-white font-black text-xl flex items-center gap-2">
             <LayoutDashboard className="text-primary-500" /> CMS ADMIN
           </h2>
-          <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest font-bold">Hệ quản trị nội dung</p>
+          <p className="text-xs text-slate-500 mt-1 uppercase tracking-widest font-bold">Hệ quản trị Cloud</p>
         </div>
         
         <nav className="flex-grow p-4 space-y-2">
           <button 
-            onClick={() => setActiveTab('list')}
+            onClick={() => { setActiveTab('list'); resetPostForm(); }}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${activeTab === 'list' ? 'bg-primary-600 text-white shadow-lg shadow-primary-900/50' : 'hover:bg-slate-800'}`}
           >
             <FileText size={18} /> Danh sách bài viết
@@ -190,7 +275,7 @@ const AdminCMS = () => {
             onClick={() => setActiveTab('add')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${activeTab === 'add' ? 'bg-primary-600 text-white shadow-lg shadow-primary-900/50' : 'hover:bg-slate-800'}`}
           >
-            <PlusCircle size={18} /> Thêm bài viết mới
+            <PlusCircle size={18} /> {editingPost ? 'Đang sửa bài' : 'Thêm bài mới'}
           </button>
           <button 
             onClick={() => setActiveTab('categories')}
@@ -202,18 +287,16 @@ const AdminCMS = () => {
 
         <div className="p-4 border-t border-slate-800">
            <div className="bg-slate-800/50 rounded-lg p-3 flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white font-bold text-xs">A</div>
+              <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white font-bold text-xs uppercase">DB</div>
               <div>
-                <p className="text-xs font-bold text-white">Quản trị viên</p>
-                <p className="text-[10px] text-slate-500">Đang trực tuyến</p>
+                <p className="text-xs font-bold text-white">Firebase Connected</p>
+                <p className="text-[10px] text-emerald-400">Database Live</p>
               </div>
            </div>
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="flex-grow flex flex-col overflow-hidden">
-        {/* Top Header */}
         <header className="bg-white border-b border-slate-200 px-8 py-4 flex justify-between items-center shadow-sm">
            <div>
               <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
@@ -223,39 +306,42 @@ const AdminCMS = () => {
                  </span>
               </div>
               <h1 className="text-2xl font-black text-slate-800 uppercase tracking-tight">
-                {activeTab === 'list' ? 'Quản lý tin tức' : activeTab === 'add' ? 'Soạn thảo tin mới' : 'Danh mục hệ thống'}
+                {activeTab === 'list' ? 'Quản lý tin tức' : activeTab === 'add' ? (editingPost ? 'Chỉnh sửa bài viết' : 'Soạn thảo tin mới') : 'Danh mục hệ thống'}
               </h1>
            </div>
+           {isLoading && (
+             <div className="flex items-center gap-2 text-primary-600 font-bold animate-pulse text-sm">
+                <Loader2 className="animate-spin" size={20} /> ĐANG XỬ LÝ...
+             </div>
+           )}
         </header>
 
-        {/* Content Area */}
         <div className="flex-grow overflow-y-auto p-8 bg-slate-50">
           {isSuccess && (
             <div className="mb-6 bg-emerald-50 border-l-4 border-emerald-500 p-4 rounded-r-lg flex items-center gap-3 animate-in fade-in slide-in-from-top-4">
               <CheckCircle className="text-emerald-500" />
               <div>
                 <p className="text-emerald-800 font-bold">Thao tác thành công!</p>
-                <p className="text-emerald-600 text-sm">Dữ liệu đã được cập nhật lên hệ thống.</p>
+                <p className="text-emerald-600 text-sm">Dữ liệu đã được cập nhật trực tiếp lên Cloud.</p>
               </div>
             </div>
           )}
 
           {activeTab === 'list' ? (
             <div className="space-y-6">
-              {/* Filters */}
               <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-wrap gap-4 items-center">
                  <div className="relative flex-grow max-w-md">
                     <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
                     <input 
                       type="text" 
                       placeholder="Tìm tiêu đề bài viết..." 
-                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-100 transition"
+                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                     />
                  </div>
                  <select 
-                    className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm text-slate-600 outline-none"
+                    className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm outline-none"
                     value={selectedCategory}
                     onChange={(e) => setSelectedCategory(e.target.value)}
                  >
@@ -266,14 +352,13 @@ const AdminCMS = () => {
                  </select>
               </div>
 
-              {/* Table Post */}
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                  <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200">
-                        <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-widest">Bài viết</th>
-                        <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-widest">Danh mục</th>
-                        <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-widest text-center">Thao tác</th>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase">Bài viết</th>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase">Danh mục</th>
+                        <th className="px-6 py-4 text-xs font-bold text-slate-500 text-center uppercase">Thao tác</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -281,10 +366,10 @@ const AdminCMS = () => {
                         <tr key={post.id} className="hover:bg-slate-50/50 transition">
                           <td className="px-6 py-4">
                             <div className="flex items-center gap-4">
-                              <img src={post.image} className="w-12 h-12 rounded object-cover border border-slate-200" alt="" />
+                              <img src={post.image} className="w-12 h-12 rounded object-cover border" alt="" />
                               <div className="max-w-md">
                                 <p className="font-bold text-slate-800 line-clamp-1">{post.title}</p>
-                                <p className="text-xs text-slate-400 line-clamp-1">{post.excerpt}</p>
+                                <p className="text-xs text-slate-400 line-clamp-1">{post.date}</p>
                               </div>
                             </div>
                           </td>
@@ -293,7 +378,7 @@ const AdminCMS = () => {
                           </td>
                           <td className="px-6 py-4">
                              <div className="flex justify-center items-center gap-2">
-                                <button className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition">
+                                <button onClick={() => handleEditPost(post)} className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition">
                                    <Edit3 size={18} />
                                 </button>
                                 <button 
@@ -313,46 +398,61 @@ const AdminCMS = () => {
           ) : activeTab === 'add' ? (
             <div className="max-w-4xl mx-auto">
                <form onSubmit={handleSubmitPost} className="space-y-6">
-                  {/* ... nội dung form add bài viết giữ nguyên hoặc tinh chỉnh nhẹ ... */}
                   <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 space-y-6">
                     <div className="flex items-center gap-2 pb-4 border-b border-slate-100 mb-6">
                        <PlusCircle className="text-primary-600" />
-                       <h3 className="text-lg font-bold text-slate-800 uppercase">Thông tin bài viết mới</h3>
+                       <h3 className="text-lg font-bold text-slate-800 uppercase">Thông tin bài viết</h3>
                     </div>
                     <div>
-                       <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tiêu đề</label>
-                       <input type="text" required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-primary-100 font-bold" value={newPost.title} onChange={(e) => setNewPost({...newPost, title: e.target.value})} />
+                       <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tiêu đề bài viết</label>
+                       <input type="text" required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold" value={postForm.title} onChange={(e) => setPostForm({...postForm, title: e.target.value})} />
                     </div>
                     <div className="grid grid-cols-2 gap-6">
                        <div>
                           <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Danh mục</label>
-                          <select className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={newPost.category} onChange={(e) => setNewPost({...newPost, category: e.target.value})}>
+                          <select className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={postForm.category} onChange={(e) => setPostForm({...postForm, category: e.target.value})}>
                              {categories.map(cat => <option key={cat.id} value={cat.title}>{cat.title}</option>)}
                           </select>
                        </div>
                        <div>
-                          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Ảnh đại diện (URL)</label>
-                          <input type="text" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={newPost.image} onChange={(e) => setNewPost({...newPost, image: e.target.value})} />
+                          <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Hình ảnh đại diện</label>
+                          <div className="flex items-center gap-4">
+                             <label className="flex-grow flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 border-2 border-dashed border-slate-300 px-4 py-2.5 rounded-xl cursor-pointer transition">
+                                <UploadCloud size={18} className="text-slate-500" />
+                                <span className="text-xs font-bold text-slate-600">CHỌN ẢNH TỪ MÁY</span>
+                                <input type="file" className="hidden" accept="image/*" onChange={handleImageChange} />
+                             </label>
+                             {imagePreview && (
+                                <div className="w-12 h-12 rounded border overflow-hidden">
+                                   <img src={imagePreview} className="w-full h-full object-cover" />
+                                </div>
+                             )}
+                          </div>
                        </div>
                     </div>
                     <div>
-                       <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tóm tắt</label>
-                       <textarea rows={2} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={newPost.excerpt} onChange={(e) => setNewPost({...newPost, excerpt: e.target.value})} />
+                       <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tóm tắt ngắn</label>
+                       <textarea rows={2} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none italic" value={postForm.excerpt} onChange={(e) => setPostForm({...postForm, excerpt: e.target.value})} />
                     </div>
                     <div>
-                       <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Nội dung</label>
-                       <textarea rows={10} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={newPost.content} onChange={(e) => setNewPost({...newPost, content: e.target.value})} />
+                       <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Nội dung chi tiết (Rich Text)</label>
+                       <textarea rows={10} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={postForm.content} onChange={(e) => setPostForm({...postForm, content: e.target.value})} />
                     </div>
                   </div>
-                  <button type="submit" className="w-full bg-primary-600 text-white font-bold py-4 rounded-2xl shadow-xl flex items-center justify-center gap-2">
-                    <Send size={20} /> XUẤT BẢN
-                  </button>
+                  <div className="flex gap-4">
+                    <button type="submit" disabled={isLoading} className="flex-grow bg-primary-600 hover:bg-primary-700 text-white font-bold py-4 rounded-2xl shadow-xl flex items-center justify-center gap-2">
+                       {isLoading ? <Loader2 className="animate-spin" /> : <Send size={20} />} 
+                       {editingPost ? 'LƯU THAY ĐỔI' : 'XUẤT BẢN BÀI VIẾT'}
+                    </button>
+                    <button type="button" onClick={() => { setActiveTab('list'); resetPostForm(); }} className="px-8 bg-white border border-slate-200 text-slate-600 font-bold py-4 rounded-2xl hover:bg-slate-50 transition">
+                       HỦY BỎ
+                    </button>
+                  </div>
                </form>
             </div>
           ) : (
-            /* TAB QUẢN LÝ DANH MỤC */
+            /* Tab Quản lý danh mục */
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 max-w-7xl mx-auto">
-               {/* Left: Form Danh Mục */}
                <div className="xl:col-span-5">
                   <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 sticky top-0">
                      <div className="flex justify-between items-center mb-6">
@@ -360,119 +460,56 @@ const AdminCMS = () => {
                            {editingCategory ? <Edit3 size={20} className="text-orange-500" /> : <PlusCircle size={20} className="text-primary-600" />}
                            {editingCategory ? 'Chỉnh sửa danh mục' : 'Thêm danh mục mới'}
                         </h3>
-                        {editingCategory && (
-                           <button onClick={resetCategoryForm} className="text-xs font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1">
-                              <RotateCcw size={14}/> Hủy chỉnh sửa
-                           </button>
-                        )}
+                        {editingCategory && <button onClick={() => {setEditingCategory(null); setCategoryForm({title:'', image:'', description:''});}} className="text-xs font-bold text-slate-400">Hủy</button>}
                      </div>
                      <form onSubmit={handleSaveCategory} className="space-y-4">
                         <div>
-                           <label className="block text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Tên danh mục</label>
-                           <input 
-                              type="text" 
-                              required
-                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-100 transition font-bold"
-                              placeholder="Ví dụ: Cảnh báo dịch bệnh"
-                              value={categoryForm.title}
-                              onChange={(e) => setCategoryForm({...categoryForm, title: e.target.value})}
-                           />
+                           <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Tên danh mục</label>
+                           <input type="text" required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold" value={categoryForm.title} onChange={(e) => setCategoryForm({...categoryForm, title: e.target.value})} />
                         </div>
                         <div>
-                           <label className="block text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Ảnh đại diện danh mục (URL)</label>
-                           <div className="relative">
-                              <ImageIcon className="absolute left-3 top-3.5 text-slate-400" size={18} />
-                              <input 
-                                 type="text" 
-                                 className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-100 transition text-sm"
-                                 placeholder="https://..."
-                                 value={categoryForm.image}
-                                 onChange={(e) => setCategoryForm({...categoryForm, image: e.target.value})}
-                              />
-                           </div>
-                           {categoryForm.image && (
-                              <div className="mt-2 w-full h-32 rounded-xl overflow-hidden border border-slate-200">
-                                 <img src={categoryForm.image} alt="Preview" className="w-full h-full object-cover" />
-                              </div>
-                           )}
+                           <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Ảnh / Icon đại diện (URL)</label>
+                           <input type="text" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={categoryForm.image} onChange={(e) => setCategoryForm({...categoryForm, image: e.target.value})} />
                         </div>
                         <div>
-                           <label className="block text-xs font-bold text-slate-500 uppercase mb-2 tracking-widest">Mô tả danh mục</label>
-                           <textarea 
-                              rows={3}
-                              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-100 transition text-sm"
-                              placeholder="Mô tả ngắn gọn về loại tin tức trong danh mục này..."
-                              value={categoryForm.description}
-                              onChange={(e) => setCategoryForm({...categoryForm, description: e.target.value})}
-                           ></textarea>
+                           <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Mô tả</label>
+                           <textarea rows={3} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none" value={categoryForm.description} onChange={(e) => setCategoryForm({...categoryForm, description: e.target.value})} />
                         </div>
-                        <button 
-                           type="submit"
-                           className={`w-full font-bold py-3 rounded-xl transition shadow-lg flex items-center justify-center gap-2 ${editingCategory ? 'bg-orange-600 hover:bg-orange-700 text-white' : 'bg-slate-900 hover:bg-slate-800 text-white'}`}
-                        >
-                           {editingCategory ? <Save size={18} /> : <Send size={18} />}
-                           {editingCategory ? 'LƯU THAY ĐỔI' : 'TẠO DANH MỤC'}
+                        <button type="submit" disabled={isLoading} className="w-full bg-slate-900 text-white font-bold py-3 rounded-xl shadow-lg flex items-center justify-center gap-2">
+                           {isLoading ? <Loader2 className="animate-spin" /> : <Save size={18} />} {editingCategory ? 'CẬP NHẬT' : 'TẠO DANH MỤC'}
                         </button>
                      </form>
                   </div>
                </div>
 
-               {/* Right: Bảng Danh Mục */}
                <div className="xl:col-span-7">
                   <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                      <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                         <h3 className="font-bold text-slate-800 uppercase flex items-center gap-2">
-                           <FolderOpen size={20} className="text-primary-600" /> Danh sách hệ thống
+                           <FolderOpen size={20} className="text-primary-600" /> Danh sách hiện có
                         </h3>
                      </div>
-                     <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                           <thead>
-                              <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-50">
-                                 <th className="px-6 py-4">Thông tin danh mục</th>
-                                 <th className="px-6 py-4 text-center">Thao tác</th>
+                     <table className="w-full text-left">
+                        <tbody className="divide-y divide-slate-50">
+                           {categories.map((cat) => (
+                              <tr key={cat.id} className="hover:bg-slate-50/50 transition group">
+                                 <td className="px-6 py-4 flex gap-4 items-center">
+                                    <img src={cat.image || 'https://via.placeholder.com/40'} className="w-10 h-10 rounded-lg object-cover" />
+                                    <div>
+                                       <span className="font-bold text-slate-800">{cat.title}</span>
+                                       <p className="text-[10px] text-slate-400 line-clamp-1">{cat.description}</p>
+                                    </div>
+                                 </td>
+                                 <td className="px-6 py-4">
+                                    <div className="flex justify-end gap-2">
+                                       <button onClick={() => {setEditingCategory(cat); setCategoryForm({title: cat.title, image: cat.image||'', description: cat.description||''});}} className="p-2 text-slate-400 hover:text-primary-600"><Edit3 size={18} /></button>
+                                       <button onClick={() => handleDeleteCategory(cat.id)} className="p-2 text-slate-400 hover:text-red-600"><Trash2 size={18} /></button>
+                                    </div>
+                                 </td>
                               </tr>
-                           </thead>
-                           <tbody className="divide-y divide-slate-50">
-                              {categories.map((cat) => (
-                                 <tr key={cat.id} className="hover:bg-slate-50/50 transition group">
-                                    <td className="px-6 py-4">
-                                       <div className="flex gap-4 items-start">
-                                          <div className="w-16 h-12 bg-slate-100 rounded border border-slate-200 overflow-hidden flex-shrink-0">
-                                             {cat.image ? <img src={cat.image} className="w-full h-full object-cover" /> : <div className="flex items-center justify-center h-full"><ImageIcon size={16} className="text-slate-300"/></div>}
-                                          </div>
-                                          <div>
-                                             <div className="flex items-center gap-2">
-                                                <span className="font-bold text-slate-800">{cat.title}</span>
-                                                <code className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">/{cat.id}</code>
-                                             </div>
-                                             <p className="text-xs text-slate-500 line-clamp-2 mt-1">{cat.description || 'Không có mô tả.'}</p>
-                                          </div>
-                                       </div>
-                                    </td>
-                                    <td className="px-6 py-4">
-                                       <div className="flex justify-center items-center gap-2">
-                                          <button 
-                                             onClick={() => handleEditCategory(cat)}
-                                             className="p-2 text-slate-400 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition"
-                                             title="Chỉnh sửa"
-                                          >
-                                             <Edit3 size={18} />
-                                          </button>
-                                          <button 
-                                             onClick={() => handleDeleteCategory(cat.id)}
-                                             className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
-                                             title="Xóa"
-                                          >
-                                             <Trash2 size={18} />
-                                          </button>
-                                       </div>
-                                    </td>
-                                 </tr>
-                              ))}
-                           </tbody>
-                        </table>
-                     </div>
+                           ))}
+                        </tbody>
+                     </table>
                   </div>
                </div>
             </div>
