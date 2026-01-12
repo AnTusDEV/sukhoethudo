@@ -5,12 +5,13 @@ import { getStorage } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-s
 
 // Thay thế các thông số này bằng thông tin từ Firebase Console của bạn
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+   apiKey: "AIzaSyAO98boIWEewKF8HKj7jJZbmkT0uu6pXYE",
+  authDomain: "so-y-te.firebaseapp.com",
+  projectId: "so-y-te",
+  storageBucket: "so-y-te.firebasestorage.app",
+  messagingSenderId: "203017190488",
+  appId: "1:203017190488:web:33ebb73d618a41e799de2d",
+  measurementId: "G-84TCF013S9"
 };
 
 // Initialize Firebase
